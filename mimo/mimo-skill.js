@@ -14,7 +14,7 @@ const http = require('http')
 /**
  * 非流式聊天
  * @param {string|Array} messages - 消息内容或消息数组
- * @param {object} opts - 可选参数 { model, temperature, max_tokens, stream, authMethod }
+ * @param {object} opts - 可选参数 { model, temperature, top_p, max_completion_tokens, stream, authMethod }
  * @returns {Promise<object>} { content, model, usage }
  */
 async function chat(messages, opts = {}) {
@@ -26,9 +26,12 @@ async function chat(messages, opts = {}) {
     messages: typeof messages === 'string' 
       ? [{ role: 'user', content: messages }] 
       : messages,
-    temperature: opts.temperature ?? 0.7,
-    max_tokens: opts.max_tokens ?? 4096,
-    stream: false
+    temperature: opts.temperature ?? 1.0,
+    top_p: opts.top_p ?? 0.95,
+    max_completion_tokens: opts.max_completion_tokens ?? 1024,
+    stream: false,
+    frequency_penalty: opts.frequency_penalty ?? 0,
+    presence_penalty: opts.presence_penalty ?? 0
   })
 
   const resp = await fetch(config.getChatUrl(), {
@@ -71,9 +74,12 @@ async function chatStream(messages, opts = {}, onChunk) {
     messages: typeof messages === 'string'
       ? [{ role: 'user', content: messages }]
       : messages,
-    temperature: opts.temperature ?? 0.7,
-    max_tokens: opts.max_tokens ?? 4096,
-    stream: true
+    temperature: opts.temperature ?? 1.0,
+    top_p: opts.top_p ?? 0.95,
+    max_completion_tokens: opts.max_completion_tokens ?? 1024,
+    stream: true,
+    frequency_penalty: opts.frequency_penalty ?? 0,
+    presence_penalty: opts.presence_penalty ?? 0
   })
 
   const url = new URL(config.getChatUrl())
