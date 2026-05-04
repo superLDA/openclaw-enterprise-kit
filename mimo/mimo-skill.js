@@ -21,13 +21,16 @@ async function chat(messages, opts = {}) {
   const model = opts.model || config.defaultModel
   const authMethod = opts.authMethod || 'api-key'
   
+  // 根据模型调整默认参数
+  const cfg = getModelDefaults(model)
+  
   const body = JSON.stringify({
     model,
     messages: typeof messages === 'string' 
       ? [{ role: 'user', content: messages }] 
       : messages,
-    temperature: opts.temperature ?? 1.0,
-    top_p: opts.top_p ?? 0.95,
+    temperature: opts.temperature ?? cfg.temperature,
+    top_p: opts.top_p ?? cfg.top_p,
     max_completion_tokens: opts.max_completion_tokens ?? 1024,
     stream: false,
     frequency_penalty: opts.frequency_penalty ?? 0,
@@ -45,15 +48,24 @@ async function chat(messages, opts = {}) {
 
   if (!resp.ok) {
     const errText = await resp.text()
-    if (resp.status === 402) {
-      throw new Error(`MiMo API 402 需要充值 (${model}): 请前往 https://mimo.xiaomi.com 充值`)
+    const errMap = {
+      400: '请求格式错误: 请检查JSON/模型名/参数',
+      401: '认证失败: 检查API Key格式和有效性',
+      402: `需要充值: 请前往 https://mimo.xiaomi.com 充值`,
+      403: '被拒绝访问: API Key可能被限制',
+      421: '检测到错误请求: 输入内容不安全',
+      429: '请求过于频繁: 请降低调用频率或升级Token Plan',
+      500: '服务器内部错误: 请稍后重试',
+      503: '服务暂不可用: 服务器过载，请稍后重试'
     }
-    throw new Error(`MiMo API ${resp.status}: ${errText}`)
+    const msg = errMap[resp.status] || `未知错误 (${resp.status})`
+    throw new Error(`MiMo API ${resp.status}: ${msg}`)
   }
 
   const data = await resp.json()
   return {
     content: data.choices?.[0]?.message?.content || '',
+    reasoning_content: data.choices?.[0]?.message?.reasoning_content || '',
     model: data.model || model,
     usage: data.usage || {}
   }
@@ -140,6 +152,24 @@ async function chatStream(messages, opts = {}, onChunk) {
     req.write(postData)
     req.end()
   })
+}
+
+/**
+ * 各模型推荐参数
+ */
+function getModelDefaults(model) {
+  const defaults = {
+    'mimo-v2-flash':  { temperature: 0.3, top_p: 0.95 },
+    'mimo-v2-pro':    { temperature: 1.0, top_p: 0.95 },
+    'mimo-v2-omni':   { temperature: 1.0, top_p: 0.95 },
+    'mimo-v2-tts':    { temperature: 0.6, top_p: 0.95 },
+    'mimo-v2.5':      { temperature: 1.0, top_p: 0.95 },
+    'mimo-v2.5-pro':  { temperature: 1.0, top_p: 0.95 },
+    'mimo-v2.5-tts':  { temperature: 0.6, top_p: 0.95 },
+    'mimo-v2.5-tts-voiceclone': { temperature: 0.6, top_p: 0.95 },
+    'mimo-v2.5-tts-voicedesign': { temperature: 0.6, top_p: 0.95 }
+  }
+  return defaults[model] || { temperature: 1.0, top_p: 0.95 }
 }
 
 /**
