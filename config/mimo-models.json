@@ -1,0 +1,33 @@
+{
+  "models": {
+    "providers": {
+      "mimo": {
+        "baseUrl": "https://api.mimo.xiaomi.com/v1",
+        "apiKey": "${MIMO_API_KEY}",
+        "models": ["mimo-v2-pro", "mimo-v2-flash", "mimo-omni", "mimo-tts"]
+      }
+    },
+    "defaults": {
+      "chat": "mimo-v2-flash",
+      "code": "mimo-v2-pro",
+      "reasoning": "mimo-v2-pro",
+      "vision": "mimo-omni",
+      "tts": "mimo-tts"
+    },
+    "routing": {
+      "strategy": "auto",
+      "fallbacks": [
+        {"model": "mimo-v2-pro", "on": ["rate_limit", "timeout"]},
+        {"model": "mimo-v2-flash", "on": ["rate_limit"]}
+      ]
+    }
+  },
+  "channels": {
+    "types": {
+      "wechat": {
+        "enabled": true,
+        "handler": "mimo"
+      }
+    }
+  }
+}
