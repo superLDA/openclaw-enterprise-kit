@@ -1,252 +1,177 @@
-#!/usr/bin/env node
-
 /**
- * MiMo Model Skill for OpenClaw
+ * MiMo API 技能模块
+ * 完整支持 Chat Completions（流式与非流式）
  * 
- * 在 OpenClaw 中直接调用小米 MiMo 大模型
- * 支持 MiMo-V2-Pro / MiMo-V2-Flash / MiMo-Omni
- * 
- * 用法:
- *   node mimo/mimo-skill.js --test          # 测试连接
- *   node mimo/mimo-skill.js --chat "你好"    # 对话
- *   node mimo/mimo-skill.js --code "写一个排序"  # 编程
+ * 使用示例:
+ *   const mimo = require('./mimo-skill')
+ *   await mimo.chat('你好', { model: 'mimo-v2-pro' })
  */
 
-const https = require('https');
-const http = require('http');
-const { getConfig, validateConfig, getModelConfig } = require('./config.js');
+const config = require('./config')
+const https = require('https')
+const http = require('http')
 
-// ============================================
-// MiMo API 调用核心
-// ============================================
+/**
+ * 非流式聊天
+ * @param {string|Array} messages - 消息内容或消息数组
+ * @param {object} opts - 可选参数 { model, temperature, max_tokens, stream, authMethod }
+ * @returns {Promise<object>} { content, model, usage }
+ */
+async function chat(messages, opts = {}) {
+  const model = opts.model || config.defaultModel
+  const authMethod = opts.authMethod || 'api-key'
+  
+  const body = JSON.stringify({
+    model,
+    messages: typeof messages === 'string' 
+      ? [{ role: 'user', content: messages }] 
+      : messages,
+    temperature: opts.temperature ?? 0.7,
+    max_tokens: opts.max_tokens ?? 4096,
+    stream: false
+  })
 
-class MiMoClient {
-  constructor() {
-    const config = getConfig();
-    this.baseUrl = config.baseUrl;
-    this.apiKey = config.apiKey;
-    this.defaultModel = config.defaultModel;
-    this.timeout = config.request.timeout;
-    this.maxRetries = config.request.maxRetries;
+  const resp = await fetch(config.getChatUrl(), {
+    method: 'POST',
+    headers: {
+      ...config.getHeaders(authMethod),
+      'Content-Type': 'application/json'
+    },
+    body
+  })
 
-    const validation = validateConfig();
-    if (!validation.valid) {
-      console.warn(`\n⚠️  ${validation.error}`);
-      console.warn(`💡  ${validation.hint}\n`);
+  if (!resp.ok) {
+    const errText = await resp.text()
+    if (resp.status === 402) {
+      throw new Error(`MiMo API 402 需要充值 (${model}): 请前往 https://mimo.xiaomi.com 充值`)
     }
+    throw new Error(`MiMo API ${resp.status}: ${errText}`)
   }
 
-  /**
-   * 发送对话请求
-   */
-  async chat(messages, options = {}) {
-    const model = options.model || this.defaultModel;
-    const url = new URL('/chat/completions', this.baseUrl);
-
-    const body = JSON.stringify({
-      model: model,
-      messages: messages,
-      temperature: options.temperature ?? 0.7,
-      max_tokens: options.maxTokens || 4096,
-      stream: options.stream ?? false,
-    });
-
-    return this._request(url.toString(), body);
+  const data = await resp.json()
+  return {
+    content: data.choices?.[0]?.message?.content || '',
+    model: data.model || model,
+    usage: data.usage || {}
   }
+}
 
-  /**
-   * 流式对话（SSE）
-   */
-  async chatStream(messages, onChunk, options = {}) {
-    const model = options.model || this.defaultModel;
-    const url = new URL('/chat/completions', this.baseUrl);
+/**
+ * 流式聊天（SSE）
+ * @param {string|Array} messages
+ * @param {object} opts - { model, temperature, max_tokens }
+ * @param {function} onChunk - 每个 token 到达时回调 (text, done)
+ * @returns {Promise<string>} 完整回复
+ */
+async function chatStream(messages, opts = {}, onChunk) {
+  const model = opts.model || config.defaultModel
+  
+  const body = JSON.stringify({
+    model,
+    messages: typeof messages === 'string'
+      ? [{ role: 'user', content: messages }]
+      : messages,
+    temperature: opts.temperature ?? 0.7,
+    max_tokens: opts.max_tokens ?? 4096,
+    stream: true
+  })
 
-    const body = JSON.stringify({
-      model: model,
-      messages: messages,
-      temperature: options.temperature ?? 0.7,
-      max_tokens: options.maxTokens || 4096,
-      stream: true,
-    });
+  const url = new URL(config.getChatUrl())
+  const fullText = []
 
-    return this._streamRequest(url.toString(), body, onChunk);
-  }
+  return new Promise((resolve, reject) => {
+    const postData = body
+    const options = {
+      hostname: url.hostname,
+      port: url.port || 443,
+      path: url.pathname,
+      method: 'POST',
+      headers: {
+        ...config.getHeaders('api-key'),
+        'Content-Type': 'application/json'
+      }
+    }
 
-  /**
-   * HTTP POST 请求（非流式）
-   */
-  _request(url, body) {
-    return new Promise((resolve, reject) => {
-      const urlObj = new URL(url);
-      const client = urlObj.protocol === 'https:' ? https : http;
+    const proto = url.protocol === 'https:' ? https : http
+    const req = proto.request(options, (res) => {
+      if (res.statusCode === 402) {
+        reject(new Error(`MiMo API 402 需要充值 (${model}): 前往 mimo.xiaomi.com 充值`))
+        return
+      }
 
-      const req = client.request(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.apiKey}`,
-          'User-Agent': 'OpenClaw-Enterprise-Kit/1.0',
-        },
-        timeout: this.timeout,
-      }, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
+      let buffer = ''
+      res.on('data', (chunk) => {
+        buffer += chunk.toString()
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const data = line.slice(6).trim()
+          if (data === '[DONE]') {
+            if (onChunk) onChunk('', true)
+            resolve(fullText.join(''))
+            return
+          }
           try {
-            const parsed = JSON.parse(data);
-            if (res.statusCode === 200) {
-              resolve(parsed);
-            } else {
-              reject(new Error(`API Error [${res.statusCode}]: ${parsed.error?.message || data}`));
+            const parsed = JSON.parse(data)
+            const delta = parsed.choices?.[0]?.delta?.content || ''
+            if (delta) {
+              fullText.push(delta)
+              if (onChunk) onChunk(delta, false)
             }
-          } catch (e) {
-            reject(new Error(`Parse Error: ${e.message}. Raw: ${data.slice(0, 200)}`));
-          }
-        });
-      });
+          } catch { /* 忽略解析错误 */ }
+        }
+      })
 
-      req.on('error', reject);
-      req.on('timeout', () => { req.destroy(); reject(new Error('Request Timeout')); });
-      req.write(body);
-      req.end();
-    });
-  }
+      res.on('end', () => {
+        if (onChunk) onChunk('', true)
+        resolve(fullText.join(''))
+      })
+    })
 
-  /**
-   * HTTP POST 请求（流式 SSE）
-   */
-  _streamRequest(url, body, onChunk) {
-    return new Promise((resolve, reject) => {
-      const urlObj = new URL(url);
-      const client = urlObj.protocol === 'https:' ? https : http;
-
-      const req = client.request(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Accept': 'text/event-stream',
-          'User-Agent': 'OpenClaw-Enterprise-Kit/1.0',
-        },
-        timeout: this.timeout + 30000,
-      }, (res) => {
-        let buffer = '';
-        let fullContent = '';
-
-        res.on('data', (chunk) => {
-          buffer += chunk.toString();
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6).trim();
-              if (data === '[DONE]') continue;
-              try {
-                const parsed = JSON.parse(data);
-                const content = parsed.choices?.[0]?.delta?.content || '';
-                if (content) {
-                  fullContent += content;
-                  onChunk?.(content, fullContent);
-                }
-              } catch { /* skip parse errors */ }
-            }
-          }
-        });
-
-        res.on('end', () => resolve(fullContent));
-      });
-
-      req.on('error', reject);
-      req.on('timeout', () => { req.destroy(); reject(new Error('Stream Timeout')); });
-      req.write(body);
-      req.end();
-    });
-  }
+    req.on('error', reject)
+    req.write(postData)
+    req.end()
+  })
 }
 
-// ============================================
-// 命令行入口
-// ============================================
-
-async function main() {
-  const args = process.argv.slice(2);
-  const client = new MiMoClient();
-
-  if (args.includes('--test')) {
-    console.log('\n🔍 测试 MiMo API 连接...\n');
-    try {
-      const result = await client.chat([
-        { role: 'user', content: '回复"连接成功"四个字即可' }
-      ], { maxTokens: 10 });
-      
-      const reply = result.choices?.[0]?.message?.content || '无响应';
-      console.log(`✅ MiMo API 连接成功！`);
-      console.log(`📝 响应: ${reply}`);
-      console.log(`⚡ 模型: ${result.model}`);
-      console.log(`📊 Token: ${result.usage?.total_tokens || 'N/A'}`);
-    } catch (e) {
-      console.error(`❌ 连接失败: ${e.message}`);
-      process.exit(1);
-    }
-  }
-
-  if (args.includes('--chat')) {
-    const idx = args.indexOf('--chat');
-    const message = args[idx + 1] || '你好';
-    
-    console.log(`\n💬 发送消息: ${message}\n`);
-    
-    try {
-      const result = await client.chat([
-        { role: 'user', content: message }
-      ]);
-      
-      const reply = result.choices?.[0]?.message?.content || '无响应';
-      console.log(`🤖 MiMo: ${reply}`);
-      console.log(`\n📊 Token: ${result.usage?.total_tokens || 'N/A'}`);
-    } catch (e) {
-      console.error(`❌ 请求失败: ${e.message}`);
-    }
-  }
-
-  if (args.includes('--code')) {
-    const idx = args.indexOf('--code');
-    const prompt = args[idx + 1] || '写一个计算斐波那契数列的函数';
-    
-    console.log(`\n💻 编程请求: ${prompt}\n`);
-    console.log('🤖 MiMo 生成中...\n');
-    
-    try {
-      await client.chatStream(
-        [{ role: 'user', content: `请用 JavaScript 实现：${prompt}，仅输出代码，不要解释` }],
-        (chunk, full) => {
-          // 清除行并输出最新内容
-          process.stdout.write('\r\x1b[K');
-          process.stdout.write(`📝 ${full.slice(-80)}`);
-        },
-        { model: 'mimo-v2-flash' }
-      );
-      console.log('\n\n✅ 生成完成！');
-    } catch (e) {
-      console.error(`\n❌ 请求失败: ${e.message}`);
-    }
-  }
-
-  // 如果没有参数，显示帮助
-  if (!args.length) {
-    console.log(`
-🦞 OpenClaw × MiMo Enterprise Kit
-
-用法:
-  node mimo/mimo-skill.js --test          测试 MiMo API 连接
-  node mimo/mimo-skill.js --chat "消息"   对话
-  node mimo/mimo-skill.js --code "需求"   编程助手
-
-配置:
-  设置环境变量 MIMO_API_KEY 或在 config.js 中填入
-    `);
-  }
+/**
+ * 列出所有可用模型
+ */
+async function listModels() {
+  const resp = await fetch(config.getModelsUrl(), {
+    headers: config.getHeaders('api-key')
+  })
+  if (!resp.ok) throw new Error(`获取模型列表失败: ${resp.status}`)
+  const data = await resp.json()
+  return data.data || []
 }
 
-main().catch(console.error);
+/**
+ * 命令行测试入口
+ */
+if (require.main === module) {
+  const testMsg = process.argv[2] || '你好，请回复"连接成功"四个字'
+  const testModel = process.argv[3] || 'mimo-v2-pro'
+  
+  console.log(`\n🤖 MiMo API 测试`)
+  console.log(`📡 API: ${config.baseUrl}`)
+  console.log(`📝 输入: ${testMsg}`)
+  console.log(`🎯 模型: ${testModel}\n`)
+  
+  chat(testMsg, { model: testModel })
+    .then(r => {
+      console.log(`✅ 回复: ${r.content}`)
+      console.log(`📊 Token: 输入 ${r.usage?.prompt_tokens || '?'} / 输出 ${r.usage?.completion_tokens || '?'}`)
+    })
+    .catch(e => {
+      console.log(`❌ 失败: ${e.message}`)
+      if (e.message.includes('402')) {
+        console.log(`💰 请在 https://mimo.xiaomi.com 充值后重试`)
+      }
+      process.exit(1)
+    })
+}
+
+module.exports = { chat, chatStream, listModels, config }

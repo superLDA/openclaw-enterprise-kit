@@ -2,32 +2,33 @@
   "models": {
     "providers": {
       "mimo": {
-        "baseUrl": "https://api.mimo.xiaomi.com/v1",
+        "baseUrl": "https://api.xiaomimimo.com/v1",
         "apiKey": "${MIMO_API_KEY}",
-        "models": ["mimo-v2-pro", "mimo-v2-flash", "mimo-omni", "mimo-tts"]
+        "api": "openai-completions",
+        "authMethod": "api-key",
+        "models": [
+          { "id": "mimo-v2-flash",  "name": "MiMo V2 Flash" },
+          { "id": "mimo-v2-pro",    "name": "MiMo V2 Pro" },
+          { "id": "mimo-v2-omni",   "name": "MiMo V2 Omni" },
+          { "id": "mimo-v2-tts",    "name": "MiMo V2 TTS" },
+          { "id": "mimo-v2.5",      "name": "MiMo V2.5" },
+          { "id": "mimo-v2.5-pro",  "name": "MiMo V2.5 Pro" },
+          { "id": "mimo-v2.5-tts",  "name": "MiMo V2.5 TTS" }
+        ]
       }
     },
     "defaults": {
-      "chat": "mimo-v2-flash",
-      "code": "mimo-v2-pro",
-      "reasoning": "mimo-v2-pro",
-      "vision": "mimo-omni",
-      "tts": "mimo-tts"
-    },
-    "routing": {
-      "strategy": "auto",
-      "fallbacks": [
-        {"model": "mimo-v2-pro", "on": ["rate_limit", "timeout"]},
-        {"model": "mimo-v2-flash", "on": ["rate_limit"]}
-      ]
+      "chat": "mimo-v2-pro",
+      "code": "mimo-v2.5-pro"
     }
   },
+  "plugins": {
+    "allow": ["openclaw-weixin", "mimo"]
+  },
   "channels": {
-    "types": {
-      "wechat": {
-        "enabled": true,
-        "handler": "mimo"
-      }
+    "wechat": {
+      "enabled": true,
+      "handler": "mimo"
     }
   }
 }
