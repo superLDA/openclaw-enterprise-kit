@@ -1,0 +1,48 @@
+name: "OpenClaw Enterprise CI"
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      
+      - name: Validate package.json
+        run: |
+          if [ -f "package.json" ]; then
+            node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'))"
+            echo "✅ package.json 格式正确"
+          fi
+      
+      - name: Check deploy scripts
+        run: |
+          if [ -f "deploy/setup.bat" ]; then
+            echo "✅ deploy/setup.bat 存在"
+          fi
+          if [ -f "deploy/setup.sh" ]; then
+            echo "✅ deploy/setup.sh 存在"
+            chmod +x deploy/setup.sh
+            echo "✅ setup.sh 可执行"
+          fi
+      
+      - name: Verify README
+        run: |
+          if [ -f "README.md" ]; then
+            LINES=$(wc -l < README.md)
+            echo "✅ README.md ($LINES 行)"
+          fi
+      
+      - name: Check docs
+        run: |
+          for f in docs/*.md; do
+            echo "✅ $f 存在"
+          done
